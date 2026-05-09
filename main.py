@@ -13,6 +13,8 @@ PRESETS_DNS = [
     ("CleanBrowsing", ["185.228.168.168", "185.228.169.168"], ["2a0d:2a00:1::", "2a0d:2a00:2::"])
 ]
 
+METODOS_IPV6_VALIDOS = ["auto", "manual"]
+
 
 def verificar_root():
     if os.geteuid() != 0:
@@ -20,17 +22,33 @@ def verificar_root():
         sys.exit(1)
 
 
+def executar_comando(comando):
+    return subprocess.run(
+        comando,
+        capture_output=True,
+        text=True
+    )
+
+
 def obter_conexao_ativa():
     try:
-        resultado = subprocess.run(
-            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
-            capture_output=True,
-            text=True
+        resultado = executar_comando(
+            ["nmcli", "-t", "-f", "NAME,DEVICE,TYPE", "connection", "show", "--active"]
         )
 
         linhas = [l for l in resultado.stdout.strip().split("\n") if l]
+
         if not linhas:
             return None
+
+        prioridade = ["ethernet", "wifi"]
+
+        for tipo in prioridade:
+            for linha in linhas:
+                partes = linha.split(":")
+
+                if len(partes) >= 3 and partes[2] == tipo:
+                    return partes[0]
 
         return linhas[0].split(":")[0]
 
@@ -40,47 +58,130 @@ def obter_conexao_ativa():
 
 def obter_status_ipv6(conexao):
     try:
-        resultado = subprocess.run(
-            ["nmcli", "-g", "ipv6.method", "connection", "show", conexao],
-            capture_output=True,
-            text=True
+        resultado = executar_comando(
+            ["nmcli", "-g", "ipv6.method", "connection", "show", conexao]
         )
+
         return resultado.stdout.strip()
+
     except Exception:
         return "desconhecido"
 
 
-def aplicar_dns(conexao, ipv4, ipv6):
-    try:
-        dns_ipv4 = " ".join(ipv4)
-        dns_ipv6 = " ".join(ipv6)
+def perguntar_ativacao_ipv6(conexao):
+    while True:
+        resposta = input(
+            "\nIPv6 está desativado/ignorado.\n"
+            "Deseja ativar IPv6 automaticamente? (s/n): "
+        ).strip().lower()
 
-        subprocess.run(["nmcli", "connection", "modify", conexao, "ipv4.ignore-auto-dns", "yes"], check=True)
-        subprocess.run(["nmcli", "connection", "modify", conexao, "ipv4.dns", dns_ipv4], check=True)
-        
+        if resposta in ["s", "sim"]:
+            try:
+                subprocess.run(
+                    ["nmcli", "connection", "modify", conexao, "ipv6.method", "auto"],
+                    check=True
+                )
+
+                print("IPv6 ativado com sucesso.")
+
+                return True
+
+            except subprocess.CalledProcessError as erro:
+                print(f"Erro ao ativar IPv6: {erro}")
+                return False
+
+        elif resposta in ["n", "nao", "não"]:
+            print("Continuando apenas com IPv4...")
+            return False
+
+        else:
+            print("Resposta inválida. Digite 's' ou 'n'.")
+
+
+def aplicar_dns_ipv4(conexao, ipv4):
+    dns_ipv4 = " ".join(ipv4)
+
+    subprocess.run(
+        ["nmcli", "connection", "modify", conexao, "ipv4.ignore-auto-dns", "yes"],
+        check=True
+    )
+
+    subprocess.run(
+        ["nmcli", "connection", "modify", conexao, "ipv4.dns", dns_ipv4],
+        check=True
+    )
+
+    print("DNS IPv4 aplicado com sucesso.")
+
+
+def aplicar_dns_ipv6(conexao, ipv6):
+    status_ipv6 = obter_status_ipv6(conexao)
+
+    if status_ipv6 not in METODOS_IPV6_VALIDOS:
+        print(f"\nIPv6 indisponível ({status_ipv6})")
+
+        ativado = perguntar_ativacao_ipv6(conexao)
+
+        if not ativado:
+            return
+
         status_ipv6 = obter_status_ipv6(conexao)
 
-        if status_ipv6 == "disabled":
-            print("IPv6 está desativado → aplicando apenas DNS IPv4")
-        else:
-            try:
-                subprocess.run(["nmcli", "connection", "modify", conexao, "ipv6.ignore-auto-dns", "yes"], check=True)
-                subprocess.run(["nmcli", "connection", "modify", conexao, "ipv6.dns", dns_ipv6], check=True)
-                print("IPv6 ativo → DNS IPv6 aplicado")
-            except subprocess.CalledProcessError:
-                print("Falha ao aplicar IPv6 → continuando apenas com IPv4")
+        if status_ipv6 not in METODOS_IPV6_VALIDOS:
+            print("IPv6 ainda não está disponível.")
+            return
 
-        subprocess.run(["nmcli", "connection", "up", conexao], check=True)
+    dns_ipv6 = " ".join(ipv6)
+
+    try:
+        subprocess.run(
+            ["nmcli", "connection", "modify", conexao, "ipv6.ignore-auto-dns", "yes"],
+            check=True
+        )
+
+        subprocess.run(
+            ["nmcli", "connection", "modify", conexao, "ipv6.dns", dns_ipv6],
+            check=True
+        )
+
+        print("DNS IPv6 aplicado com sucesso.")
+
+    except subprocess.CalledProcessError as erro:
+        print(f"Falha ao aplicar IPv6: {erro}")
+        print("Continuando apenas com IPv4...")
+
+
+def reativar_conexao(conexao):
+    try:
+        subprocess.run(
+            ["nmcli", "connection", "up", conexao],
+            check=True
+        )
+
+        print("Conexão reativada com sucesso.")
+
+    except subprocess.CalledProcessError as erro:
+        print(f"Erro ao reativar conexão: {erro}")
+        sys.exit(1)
+
+
+def aplicar_dns(conexao, ipv4, ipv6):
+    try:
+        aplicar_dns_ipv4(conexao, ipv4)
+
+        aplicar_dns_ipv6(conexao, ipv6)
+
+        reativar_conexao(conexao)
 
         print("\nDNS aplicado com sucesso!")
 
     except subprocess.CalledProcessError as erro:
-        print(f"Erro ao aplicar DNS: {erro}")
+        print(f"\nErro ao aplicar DNS: {erro}")
 
 
 def mostrar_menu():
     print("\n==============================")
-    print("      DNS SWITCHER    ")
+    print("        DNS SWITCHER")
     print("==============================\n")
 
     for indice, (nome, _, _) in enumerate(PRESETS_DNS, start=1):
@@ -93,6 +194,7 @@ def main():
     verificar_root()
 
     conexao = obter_conexao_ativa()
+
     if not conexao:
         print("Não foi possível detectar a conexão ativa.")
         sys.exit(1)
@@ -118,6 +220,7 @@ def main():
             print(f"\nAplicando DNS: {nome}")
 
             aplicar_dns(conexao, ipv4, ipv6)
+
         else:
             print("Opção inválida.")
 
