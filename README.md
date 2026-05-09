@@ -3,7 +3,7 @@
 <h1>DNS Switcher</h1>
 
 <p>
-Utilitário em Python para alterar rapidamente servidores DNS no Linux usando NetworkManager.
+Aplicativo em Python para alterar rapidamente servidores DNS no Linux usando NetworkManager.
 </p>
 
 <img src="https://img.shields.io/badge/python-3.x-blue">
